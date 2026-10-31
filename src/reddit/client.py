@@ -738,10 +738,11 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
 
     # Ensure RAW_DIR exists
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = config.RAW_DIR / f"meme_video{ext}"
+    file_prefix = f"candidate_{post_id}" if post_id else "meme_video"
+    out_path = config.RAW_DIR / f"{file_prefix}{ext}"
 
-    # Clean up any pre-existing files of any extension to prevent collisions
-    for old in config.RAW_DIR.glob("meme_video.*"):
+    # Clean up any pre-existing files of this prefix
+    for old in config.RAW_DIR.glob(f"{file_prefix}.*"):
         try:
             old.unlink(missing_ok=True)
         except Exception:
@@ -904,9 +905,9 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
                     qualities.remove(orig_quality)
                 qualities.insert(0, orig_quality)
 
-            logger.info(f"Attempting proxy download pool for Video ID: {video_id} using {len(instances)} instances")
-            for instance in instances[:10]:
-                for q in qualities:
+            logger.info(f"Attempting proxy download pool for Video ID: {video_id} (max 2 instances)...")
+            for instance in instances[:2]:
+                for q in qualities[:2]:
                     proxy_video_url = f"{instance}/vid/{video_id}/cmaf/{q}.mp4"
                     logger.info(f"Attempting proxy download from: {proxy_video_url}")
                     try:
@@ -1175,3 +1176,217 @@ def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[R
         f"ID: {selected_post.id} - Title: {selected_post.title[:50]}..."
     )
     return selected_post
+
+
+def get_compilation_candidate_pool(
+    target_count: int = 5,
+    exclude_ids: Optional[Set[str]] = None
+) -> List[dict]:
+    """
+    Candidate Pool Ingestion Engine for Top 5 Ranking Compilations:
+    1. Fetches 25-40 post metadatas into memory via single provider request.
+    2. Lazy-downloads clips one by one.
+    3. Strictly enforces duration bounds (3.5s - 11.0s) and accumulated total <= 58.0s.
+    4. Probes for audio and validates Stage 1 content safety.
+    5. Summarizes title to max 3 words + emoji via Groq / local fallback.
+    6. Stops immediately upon reaching target_count.
+    7. Sorts candidates by score: #5 (opening) -> #1 (climax finale).
+    """
+    subreddits = config.SUBREDDITS
+    if not subreddits:
+        logger.error("No subreddits configured in config.SUBREDDITS")
+        return []
+
+    processed_ids = load_processed_ids()
+    if exclude_ids:
+        processed_ids = set(processed_ids).union(exclude_ids)
+
+    from src.reddit.providers import RedditPrawProvider, RedditRSSProvider, RedditAnonymousProvider
+    from src.safety import ContentSafetyAnalyzer, log_rejected_post
+    from src.video.renderer import _get_audio_duration, _has_audio
+    from src.narration.title_summarizer import summarize_ranking_title
+
+    safety_analyzer = ContentSafetyAnalyzer()
+
+    providers = []
+    if config.REDDIT_CLIENT_ID and config.REDDIT_CLIENT_SECRET:
+        providers.append(RedditPrawProvider())
+    if getattr(config, "RSS_ENABLED", False):
+        providers.append(RedditRSSProvider())
+    providers.append(RedditAnonymousProvider())
+
+    valid_candidates_in_ram: List[RedditPost] = []
+    for provider in providers:
+        logger.info(f"[Compilation] Fetching candidate pool via provider: {provider.name()}")
+        try:
+            posts = provider.fetch_posts(subreddits)
+            for post in posts:
+                reason = filter_post(post, processed_ids)
+                if reason is None:
+                    valid_candidates_in_ram.append(post)
+            min_pool_target = max(50, target_count * 10)
+            if len(valid_candidates_in_ram) >= min_pool_target:
+                logger.info(f"✔ Provider {provider.name()} yielded {len(valid_candidates_in_ram)} candidate posts in RAM.")
+                break
+        except Exception as e:
+            logger.warning(f"Provider {provider.name()} failed to fetch compilation pool: {e}")
+
+    if not valid_candidates_in_ram:
+        logger.error("❌ No candidate posts found in RAM for compilation.")
+        return []
+
+    # Shuffle candidates to maintain diversity across runs
+    random.shuffle(valid_candidates_in_ram)
+
+    min_dur = getattr(config, "COMPILATION_MIN_CLIP_DURATION", 3.5)
+    max_dur = getattr(config, "COMPILATION_MAX_CLIP_DURATION", 11.0)
+    max_total_dur = getattr(config, "COMPILATION_MAX_TOTAL_DURATION", 58.0)
+
+    approved_clips: List[dict] = []
+    accumulated_dur = 0.0
+
+    def _eval_candidate(post: RedditPost) -> Optional[dict]:
+        nonlocal accumulated_dur
+        if accumulated_dur + min_dur > max_total_dur:
+            return None
+
+        logger.info(f"Downloading candidate clip for post {post.id} ('{post.title[:35]}...')...")
+        clip_path = None
+        try:
+            clip_path = download_meme_video(post.media_url, post_id=post.id)
+            is_image = clip_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+            if is_image:
+                clip_path.unlink(missing_ok=True)
+                return None
+
+            try:
+                clip_dur = _get_audio_duration(clip_path)
+            except Exception:
+                clip_path.unlink(missing_ok=True)
+                return None
+
+            # Strict duration bounds check
+            if clip_dur < min_dur or clip_dur > max_dur:
+                logger.debug(f"Candidate {post.id} discarded: duration {clip_dur:.1f}s outside bounds ({min_dur}s - {max_dur}s).")
+                clip_path.unlink(missing_ok=True)
+                return None
+
+            # Check if this clip exceeds the remaining total duration budget
+            if (accumulated_dur + clip_dur) > max_total_dur:
+                logger.debug(f"Candidate {post.id} skipped: total duration ({accumulated_dur + clip_dur:.1f}s) would exceed {max_total_dur:.1f}s.")
+                clip_path.unlink(missing_ok=True)
+                return None
+
+            # Check audio presence
+            if not _has_audio(clip_path):
+                logger.debug(f"Candidate {post.id} discarded: video has no audio track.")
+                clip_path.unlink(missing_ok=True)
+                return None
+
+            # Content Safety Stage 1 Check
+            if getattr(config, "ENABLE_CONTENT_SAFETY", True):
+                safety_res = safety_analyzer.check_safety(
+                    title=post.title,
+                    body=post.selftext,
+                    image_path=clip_path,
+                    stage="After Ingestion"
+                )
+                if not safety_res["passed"]:
+                    logger.warning(f"Candidate {post.id} rejected at Stage 1 Safety: {safety_res['reason']}")
+                    log_rejected_post(
+                        post_id=post.id,
+                        subreddit=post.subreddit,
+                        risk_score=safety_res["risk_score"],
+                        category=", ".join(safety_res["categories_detected"]) or "safety_policy_violation",
+                        reason=safety_res["reason"]
+                    )
+                    clip_path.unlink(missing_ok=True)
+                    return None
+
+            # Summarize 3-word title + emoji
+            rank_title = summarize_ranking_title(post.title)
+            accumulated_dur += clip_dur
+
+            return {
+                "post": post,
+                "video_path": clip_path,
+                "duration": clip_dur,
+                "title": rank_title,
+                "score": post.score
+            }
+        except Exception as e:
+            logger.warning(f"Error evaluating candidate {post.id}: {e}")
+            if clip_path and clip_path.exists():
+                try:
+                    clip_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return None
+
+    logger.info(f"Beginning Lazy Streaming Download for Top {target_count} Compilation...")
+
+    for post in valid_candidates_in_ram:
+        if len(approved_clips) >= target_count:
+            break
+        cand = _eval_candidate(post)
+        if cand:
+            approved_clips.append(cand)
+            logger.info(f"✔ Approved candidate #{len(approved_clips)}/{target_count}: '{cand['title']}' ({cand['duration']:.1f}s, score: {cand['score']}) [Total: {accumulated_dur:.1f}s]")
+
+    # Supplementary fetch across related subreddits if initial pool yielded fewer than target_count
+    if len(approved_clips) < target_count:
+        logger.info(f"Harvested {len(approved_clips)}/{target_count} clips from initial batch. Querying supplementary subreddits...")
+        supp_subs = [s for s in ["IdiotsInCars", "holdmyfeedingtube", "instant_regret", "nonononoyes", "maybemaybemaybe"] if s not in subreddits]
+        for extra_sub in supp_subs:
+            if len(approved_clips) >= target_count or (accumulated_dur + min_dur > max_total_dur):
+                break
+            logger.info(f"Fetching supplementary candidate pool from r/{extra_sub}...")
+            try:
+                sub_raw = _fetch_with_rss(extra_sub, sort="hot")
+                for rp in sub_raw:
+                    if len(approved_clips) >= target_count or (accumulated_dur + min_dur > max_total_dur):
+                        break
+                    p_obj = RedditPost(
+                        id=rp.get("id", ""),
+                        subreddit=extra_sub,
+                        title=rp.get("title", ""),
+                        selftext=rp.get("selftext", ""),
+                        score=rp.get("score", 0) or 500,
+                        num_comments=rp.get("num_comments", 0),
+                        over_18=False,
+                        is_self=False,
+                        permalink=rp.get("permalink", ""),
+                        author=rp.get("author", "[deleted]"),
+                        pinned=False,
+                        crosspost_parent=None,
+                        media_url=rp.get("url", "")
+                    )
+                    p_obj.is_rss = True
+                    if filter_post(p_obj, processed_ids) is None:
+                        cand = _eval_candidate(p_obj)
+                        if cand:
+                            approved_clips.append(cand)
+                            logger.info(f"✔ Approved candidate #{len(approved_clips)}/{target_count}: '{cand['title']}' ({cand['duration']:.1f}s, score: {cand['score']}) [Total: {accumulated_dur:.1f}s]")
+            except Exception as e:
+                logger.debug(f"Supplementary fetch for r/{extra_sub} failed: {e}")
+
+    if len(approved_clips) < 3:
+        logger.error(f"❌ Failed to collect enough compilation clips (only found {len(approved_clips)}/{target_count}).")
+        return []
+
+    # Sort candidates in ascending score order:
+    # Lowest score -> Rank 5 (Opening)
+    # Highest score -> Rank 1 (Climax / Winner)
+    approved_clips.sort(key=lambda x: x["score"])
+
+    # Assign countdown ranks: total_count down to 1
+    total_clips = len(approved_clips)
+    for idx, item in enumerate(approved_clips):
+        item["rank"] = total_clips - idx
+
+    logger.info("🎉 Final Top 5 Compilation Lineup:")
+    for item in approved_clips:
+        logger.info(f"   #{item['rank']}: {item['title']} ({item['duration']:.1f}s | Reddit Score: {item['score']})")
+
+    return approved_clips
+

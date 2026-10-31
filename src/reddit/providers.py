@@ -137,9 +137,10 @@ class RedditRSSProvider(BaseProvider):
             shuffled_subs = list(subreddits)
             random.shuffle(shuffled_subs)
             
+            pool_target = 60 if getattr(config, "COMPILATION_MODE", False) else 15
             for sub in shuffled_subs:
                 # Stop when we have gathered a healthy selection pool of candidate posts
-                if len(posts) >= 15:
+                if len(posts) >= pool_target:
                     break
                     
                 logger.info(f"Fetching RSS feed for r/{sub} dynamically via public RSS-to-JSON proxies")
@@ -540,10 +541,11 @@ class RedditAnonymousProvider(BaseProvider):
         shuffled_subs = list(subreddits)
         random.shuffle(shuffled_subs)
         
+        pool_target = 60 if getattr(config, "COMPILATION_MODE", False) else 15
         raw_posts = []
         for sub in shuffled_subs:
             # Stop when we have gathered a healthy selection pool of candidate posts
-            if len(raw_posts) >= 15:
+            if len(raw_posts) >= pool_target:
                 break
                 
             logger.info(f"Fetching posts via Anonymous Fallbacks for r/{sub} (sort: {config.REDDIT_SORT})")

@@ -239,3 +239,67 @@ def generate_optimized_metadata(
         "tags": final_tags,
         "category_id": category_id
     }
+
+
+def generate_compilation_metadata(clips_data: list[dict]) -> dict:
+    """
+    Generates high-CTR metadata tailored for YouTube Shorts Top 5 countdown compilations.
+    Includes timestamps in description for each clip.
+    """
+    rank_1_title = ""
+    for item in clips_data:
+        if item.get("rank") == 1:
+            rank_1_title = item.get("title", "")
+            break
+    if not rank_1_title and clips_data:
+        rank_1_title = clips_data[-1].get("title", "")
+
+    # Clicky compilation titles
+    title_options = [
+        f"Top 5 Fails That Hurt To Watch 💀 (#1 is Wild) #Shorts",
+        f"Ranking Top 5 Instant Regrets (#1 Was Cooking) 😭 #Shorts",
+        f"Top 5 What Could Go Wrong Moments Caught On Camera 🤯 #Shorts",
+        f"Top 5 Funniest Fails of the Week (#1 Winner) 🏆 #Shorts",
+        f"Ranking The Best Fails Ever (#1 is Crazy) 💀 #Shorts"
+    ]
+    title = random.choice(title_options)
+
+    # Build description with timestamps
+    description_lines = [
+        "Which one was the craziest? Rate them 1-10 in the comments! 👇\n",
+        "TIMESTAMPS:"
+    ]
+
+    curr_time = 0.0
+    for item in clips_data:
+        r = item.get("rank", 1)
+        dur = item.get("duration", 8.0)
+        t_label = item.get("title", f"Clip #{r}")
+        mins = int(curr_time // 60)
+        secs = int(curr_time % 60)
+        time_str = f"{mins}:{secs:02d}"
+        if r == 1:
+            description_lines.append(f"{time_str} - #{r} {t_label} (Grand Finale)")
+        else:
+            description_lines.append(f"{time_str} - #{r} {t_label}")
+        curr_time += dur
+
+    description_lines.append("\nCurated funniest moments from Reddit.")
+    description_lines.append(getattr(config, "METADATA_DISCLAIMER", "Curated clips from r/Whatcouldgowrong, r/Unexpected, and r/AccidentalSlapStick."))
+    description_lines.append("\n#Shorts #Ranking #Fails #WhatCouldGoWrong #InstantRegret #Viral #Comedy")
+
+    description = "\n".join(description_lines)
+
+    tags = [
+        "shorts", "ranking", "top 5", "top 5 fails", "fails", "fail compilation",
+        "whatcouldgowrong", "wcgw", "unexpected", "instantregret", "instantkarma",
+        "viral", "trending", "comedy", "funny videos", "reddit"
+    ]
+
+    return {
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "category_id": "23"  # 23 = Comedy
+    }
+

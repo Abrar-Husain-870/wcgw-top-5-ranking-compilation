@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 
 # Load local environment file
-load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / ".env", override=True)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -120,7 +120,7 @@ OLLAMA_API_URL = _env("OLLAMA_API_URL", "http://localhost:11434/v1")
 # Resolve default model names if none is provided
 if not LLM_MODEL:
     if LLM_PROVIDER == "groq":
-        LLM_MODEL = "llama-3.3-70b-versatile"
+        LLM_MODEL = "openai/gpt-oss-20b"
     elif LLM_PROVIDER == "deepseek":
         LLM_MODEL = "deepseek-chat"
     elif LLM_PROVIDER == "gemini":
@@ -132,7 +132,7 @@ if not LLM_MODEL:
     elif LLM_PROVIDER == "ollama":
         LLM_MODEL = "llama3"
     else:
-        LLM_MODEL = "llama-3.3-70b-versatile"
+        LLM_MODEL = "openai/gpt-oss-20b"
 
 # ── Voice / TTS Settings ─────────────────────────────────────
 TTS_PROVIDER = _env("TTS_PROVIDER", "edge")  # edge, elevenlabs, openai
@@ -255,3 +255,11 @@ BRANDING_TEXT = _env("BRANDING_TEXT", "")
 ADD_INTRO_OUTRO = _env_bool("ADD_INTRO_OUTRO", False)
 CAPTION_ON_TOP = _env_bool("CAPTION_ON_TOP", True)
 BOTTOM_CALLOUT_ENABLED = _env_bool("BOTTOM_CALLOUT_ENABLED", True)
+
+# ── Top 5 Ranking Compilation Mode Settings ───────────────────────────
+COMPILATION_MODE = _env_bool("COMPILATION_MODE", True)
+COMPILATION_CLIP_COUNT = int(_env("COMPILATION_CLIP_COUNT", "5"))
+COMPILATION_MIN_CLIP_DURATION = float(_env("COMPILATION_MIN_CLIP_DURATION", "3.5"))
+COMPILATION_MAX_CLIP_DURATION = float(_env("COMPILATION_MAX_CLIP_DURATION", "11.0"))
+COMPILATION_MAX_TOTAL_DURATION = float(_env("COMPILATION_MAX_TOTAL_DURATION", "58.0"))
+RANKING_HEADER_TEXT = _env("RANKING_HEADER_TEXT", "Ranking Best Fails")

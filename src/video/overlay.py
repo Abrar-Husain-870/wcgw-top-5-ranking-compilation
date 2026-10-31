@@ -351,3 +351,186 @@ def generate_creator_caption_banner(
 
 # Backward compatibility alias
 generate_top_caption_banner = generate_creator_caption_banner
+
+
+def generate_ranking_compilation_overlay(
+    active_rank: int,
+    total_ranks: int = 5,
+    rank_titles: dict[int, str] = None,
+    header_text: str = "",
+    filename: str = "ranking_overlay.png"
+) -> Path:
+    """
+    Generates a viral ranking list overlay matching @Top6-Ranks aesthetic:
+    - Top Header: 'Ranking Best [Accent Word]' with bold white and red text and black outline.
+    - Left Ranking List: Numbers 1. to 5. with distinct colors and black outline.
+    - Revealed Titles: Shows 3-word title + emoji for ranks that have been shown,
+      with the currently playing rank prominently highlighted.
+    """
+    output_path = config.OUTPUT_DIR / filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if rank_titles is None:
+        rank_titles = {}
+
+    canvas = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+    d = ImageDraw.Draw(canvas)
+
+    # 1. Resolve Fonts
+    font_bold_candidates = [
+        "C:/Windows/Fonts/ariblk.ttf",       # Arial Black
+        "C:/Windows/Fonts/impact.ttf",       # Impact
+        "C:/Windows/Fonts/arialbd.ttf",      # Arial Bold
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+        "arialbd.ttf"
+    ]
+    emoji_font_candidates = [
+        "C:/Windows/Fonts/seguiemj.ttf",      # Segoe UI Emoji
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "seguiemj.ttf"
+    ]
+
+    f_head = None
+    f_num = None
+    f_txt = None
+    f_emj = None
+
+    for f_path in font_bold_candidates:
+        try:
+            f_head = ImageFont.truetype(f_path, 58)
+            f_num = ImageFont.truetype(f_path, 50)
+            f_txt = ImageFont.truetype(f_path, 44)
+            break
+        except Exception:
+            continue
+
+    if f_head is None:
+        f_head = ImageFont.load_default()
+        f_num = ImageFont.load_default()
+        f_txt = ImageFont.load_default()
+
+    for e_path in emoji_font_candidates:
+        try:
+            f_emj = ImageFont.truetype(e_path, 44)
+            break
+        except Exception:
+            continue
+
+    # 2. Draw Top Header: "Ranking Best Fails"
+    if not header_text:
+        header_text = getattr(config, "RANKING_HEADER_TEXT", "Ranking Best Fails")
+
+    # Split into main text and accent text (last 1-2 words in red)
+    header_words = header_text.strip().split()
+    if len(header_words) > 1:
+        # e.g. "Ranking Best" and "Fails"
+        main_header = " ".join(header_words[:-1]) + " "
+        accent_header = header_words[-1]
+    else:
+        main_header = header_text + " "
+        accent_header = ""
+
+    head_y = 140
+    try:
+        w_main = d.textlength(main_header, font=f_head)
+        w_acc = d.textlength(accent_header, font=f_head) if accent_header else 0
+        tot_w = w_main + w_acc
+        start_x = int((1080 - tot_w) // 2)
+
+        d.text(
+            (start_x, head_y),
+            main_header,
+            font=f_head,
+            fill=(255, 255, 255, 255),
+            stroke_width=7,
+            stroke_fill=(0, 0, 0, 255)
+        )
+        if accent_header:
+            d.text(
+                (start_x + int(w_main), head_y),
+                accent_header,
+                font=f_head,
+                fill=(255, 34, 34, 255),  # Vibrant Red
+                stroke_width=7,
+                stroke_fill=(0, 0, 0, 255)
+            )
+    except Exception as e:
+        logger.warning(f"Error drawing header text: {e}")
+
+    # 3. Draw Ranking List on Left Side
+    rank_colors = {
+        1: (255, 229, 0, 255),   # Yellow/Gold
+        2: (255, 255, 255, 255), # White
+        3: (255, 149, 0, 255),   # Orange
+        4: (255, 255, 255, 255), # White
+        5: (255, 42, 42, 255),   # Red
+        6: (255, 42, 42, 255),   # Red
+    }
+
+    start_y = 290
+    spacing_y = 105
+    left_x = 90
+
+    for r in range(1, total_ranks + 1):
+        curr_y = start_y + (r - 1) * spacing_y
+        is_active = (r == active_rank)
+
+        # Draw rank number: "1." or "5."
+        num_str = f"{r}. "
+        base_color = rank_colors.get(r, (255, 255, 255, 255))
+        stroke_w = 7 if is_active else 5
+
+        d.text(
+            (left_x, curr_y),
+            num_str,
+            font=f_num,
+            fill=base_color,
+            stroke_width=stroke_w,
+            stroke_fill=(0, 0, 0, 255)
+        )
+        try:
+            num_w = int(d.textlength(num_str, font=f_num))
+        except Exception:
+            num_w = 70
+
+        # In countdown mode (5 -> 1), titles are revealed for ranks >= active_rank
+        # (or if rank_titles has this rank explicitly revealed)
+        show_title = (r >= active_rank) and (r in rank_titles)
+
+        if show_title:
+            title_str = rank_titles[r]
+            parts = title_str.rsplit(" ", 1)
+            txt_part = parts[0]
+            emj_part = parts[1] if len(parts) > 1 else ""
+
+            # Highlight active rank with brighter/bold text
+            text_color = (255, 255, 255, 255)
+            txt_stroke = 6 if is_active else 5
+
+            d.text(
+                (left_x + num_w, curr_y),
+                txt_part,
+                font=f_txt,
+                fill=text_color,
+                stroke_width=txt_stroke,
+                stroke_fill=(0, 0, 0, 255)
+            )
+
+            if emj_part and f_emj:
+                try:
+                    txt_w = int(d.textlength(txt_part, font=f_txt))
+                    d.text(
+                        (left_x + num_w + txt_w + 12, curr_y),
+                        emj_part,
+                        font=f_emj,
+                        fill=(255, 255, 255, 255),
+                        embedded_color=True
+                    )
+                except Exception:
+                    pass
+
+    canvas.save(output_path, "PNG")
+    logger.info(f"Ranking compilation overlay generated at {output_path} (active rank #{active_rank})")
+    return output_path
+

@@ -15,6 +15,12 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Force UTF-8 encoding on Windows standard output/error to prevent Unicode encoding crashes
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True, write_through=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True, write_through=True)
+
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(ENV_PATH, override=True)
 

@@ -109,13 +109,16 @@ class ContentSafetyAnalyzer:
         # If performing a vision check and Gemini key is configured, route to Gemini as it supports vision on the free tier
         if image_path and config.GEMINI_API_KEY:
             provider = "gemini"
-            model_name = config.LLM_MODEL or "gemini-3.8-flash"
+            model_name = config.LLM_MODEL or "gemini-2.5-flash"
+        elif config.GROQ_API_KEY:
+            provider = "groq"
+            model_name = "openai/gpt-oss-20b"
         else:
             provider = orig_provider
             model_name = orig_model_name
         
-        max_retries = 3
-        backoff_sec = 45
+        max_retries = 1
+        backoff_sec = 2
         
         for attempt in range(max_retries):
             try:
@@ -144,30 +147,20 @@ class ContentSafetyAnalyzer:
                 raise ValueError("GROQ_API_KEY is not configured")
             client = Groq(api_key=config.GROQ_API_KEY)
             
-            actual_model = model_name
-            if image_path:
-                import base64
-                with open(image_path, "rb") as img_f:
-                    b64_img = base64.b64encode(img_f.read()).decode('utf-8')
-                user_content = [
-                    {"type": "text", "text": user_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64_img}"
-                        }
-                    }
-                ]
-                # Check if model is vision-capable; if not, fallback to Llama 4 Scout
-                is_vision_model = any(k in model_name.lower() for k in ["vision", "scout", "qwen3.6-27b"])
-                if not is_vision_model:
-                    actual_model = "meta-llama/llama-4-scout-17b-16e-instruct"
-            else:
-                user_content = user_prompt
+            actual_model = model_name or "openai/gpt-oss-20b"
+            user_content = user_prompt
                 
-            models_to_try = [actual_model]
-            if actual_model not in ["llama-3.3-70b-versatile", "llama3-8b-8192", "gemma2-9b-it"]:
-                models_to_try.extend(["llama-3.3-70b-versatile", "llama3-8b-8192", "gemma2-9b-it"])
+            candidate_models = [
+                actual_model,
+                "openai/gpt-oss-20b",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3.8-27b",
+                "openai/gpt-oss-safeguard-20b",
+            ]
+            models_to_try = []
+            for m in candidate_models:
+                if m not in models_to_try:
+                    models_to_try.append(m)
             
             last_err = None
             for m in models_to_try:
@@ -186,7 +179,7 @@ class ContentSafetyAnalyzer:
                 except Exception as e:
                     last_err = e
                     err_s = str(e).lower()
-                    if "404" in err_s or "model_not_found" in err_s or "does not exist" in err_s:
+                    if "404" in err_s or "model_not_found" in err_s or "does not exist" in err_s or "decommissioned" in err_s:
                         logger.warning(f"Groq model {m} not found/deprecated. Trying fallback model...")
                         continue
                     raise e
@@ -259,6 +252,7 @@ class ContentSafetyAnalyzer:
                 contents.append(img)
             response = model.generate_content(
                 contents,
+                request_options={"timeout": 12},
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.0,
                     max_output_tokens=300,
@@ -408,29 +402,29 @@ class ContentSafetyAnalyzer:
             local_score, local_cats, local_reason = self.run_local_scan(full_text)
             
             # ── 2. LLM Contextual Safety Scanner ──────────────────────────────────
-            risk_score = "Safe"
-            categories_detected = []
-            reason = ""
+            has_llm_key = bool(config.GROQ_API_KEY or config.GEMINI_API_KEY or config.OPENAI_API_KEY or config.DEEPSEEK_API_KEY)
+            risk_score = local_score
+            categories_detected = local_cats
+            reason = local_reason
             llm_success = False
 
-            try:
-                risk_score, categories_detected, reason = self.run_llm_scan(full_text, image_path)
-                llm_success = True
-                logger.info(f"LLM safety check succeeded. Risk: {risk_score}, Categories: {categories_detected}")
-            except Exception as e:
-                logger.error(f"Contextual LLM safety scan error: {e}")
-                if config.SAFETY_MODE == "strict":
-                    # Strict mode is fail-safe, default to Reject on error
-                    risk_score = "Reject"
-                    categories_detected = ["llm_api_failure"]
-                    reason = f"Strict mode fail-safe: Contextual safety check API failed/timed out. Error: {str(e)}"
-                    logger.warning("Failing safe: LLM check failed in strict safety mode. Rejecting content.")
-                else:
-                    # Lenient or Standard: fallback to local regex scan results
-                    risk_score = local_score
-                    categories_detected = local_cats
-                    reason = f"LLM failed, fell back to local scan. {local_reason}"
-                    logger.info("Fell back to local safety scan because LLM check failed.")
+            if has_llm_key:
+                try:
+                    risk_score, categories_detected, reason = self.run_llm_scan(full_text, image_path)
+                    llm_success = True
+                    logger.info(f"LLM safety check succeeded. Risk: {risk_score}, Categories: {categories_detected}")
+                except Exception as e:
+                    logger.warning(f"Contextual LLM safety scan error: {e}. Fell back to local scan.")
+                    if config.SAFETY_MODE == "strict":
+                        risk_score = "Reject"
+                        categories_detected = ["llm_api_failure"]
+                        reason = f"Strict mode fail-safe: Contextual safety check API failed/timed out. Error: {str(e)}"
+                    else:
+                        risk_score = local_score
+                        categories_detected = local_cats
+                        reason = f"LLM failed, fell back to local scan. {local_reason}"
+            else:
+                logger.debug("No LLM key configured. Fast-path local safety scan applied.")
 
             # If LLM check succeeded, but local scan flagged a critical term, merge them for extra protection
             if llm_success and local_score == "Reject":

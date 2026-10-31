@@ -772,7 +772,7 @@ def render_curator_short(
     if meme_ar < 0.6:
         # Portrait (vertical) video: scale to fit and pad to exactly 1080x1920
         filter_chains.append(
-            f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,"
             f"pad=1080:1920:(1080-iw)/2:(1920-ih)/2:color=black[base_v]"
         )
     else:
@@ -783,14 +783,14 @@ def render_curator_short(
             )
             # Background: blur and scale to fill 1080x1920
             filter_chains.append(
-                f"[bg_src]scale=1080:1920:force_original_aspect_ratio=increase,"
+                f"[bg_src]scale=1080:1920:force_original_aspect_ratio=increase:force_divisible_by=2,"
                 f"crop=1080:1920,boxblur=30:5[bg_blurred]"
             )
             # Foreground: scale to full 1080 width (preserving original aspect ratio completely)
             fg_w = 1080
             fg_h = make_even(1080 / meme_ar)
             filter_chains.append(
-                f"[fg_src]scale={fg_w}:{fg_h}:force_original_aspect_ratio=decrease[fg_scaled]"
+                f"[fg_src]scale={fg_w}:{fg_h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg_scaled]"
             )
             # Overlay foreground onto blurred background
             filter_chains.append(
@@ -799,7 +799,7 @@ def render_curator_short(
         else:
             # Clean black letterboxing (no blur, pure original video)
             filter_chains.append(
-                f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+                f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,"
                 f"pad=1080:1920:(1080-iw)/2:(1920-ih)/2:color=black[base_v]"
             )
         
@@ -1012,5 +1012,211 @@ def clean_title_for_ffmpeg(text: str) -> str:
     # Replace multiple spaces with a single space
     cleaned = re.sub(r' +', ' ', cleaned)
     return cleaned.strip()
+
+
+def render_compilation_clip(
+    meme_video_path: Path,
+    overlay_path: Path,
+    output_path: Path,
+    duration: float
+) -> Path:
+    """
+    Renders a single standardized 1080x1920 60FPS clip for the ranking compilation.
+    Matches the exact layout rules of Curator Mode:
+    - Portrait (<0.6 aspect ratio): letterboxed/fit to 1080x1920.
+    - Landscape/Square (>=0.6 aspect ratio): crisp foreground centered at 1080 width,
+      blurred background canvas filling 1080x1920.
+    - Overlays the ranking banner transparent PNG across the frame.
+    - Forces 60 FPS CFR H.264 video and 48,000 Hz stereo AAC audio.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    is_image = meme_video_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+    if is_image:
+        mw, mh = _get_image_dimensions(meme_video_path)
+    else:
+        mw, mh = _get_video_dimensions(meme_video_path)
+    meme_ar = mw / mh if mh > 0 else 1.0
+
+    inputs = []
+    if is_image:
+        inputs.extend(["-loop", "1", "-i", str(meme_video_path)])
+    else:
+        inputs.extend(["-i", str(meme_video_path)])
+
+    # Overlay is input #1
+    inputs.extend(["-loop", "1", "-i", str(overlay_path)])
+
+    filter_chains = []
+
+    # 1. Base visual composition
+    if meme_ar < 0.6:
+        filter_chains.append(
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"pad=1080:1920:(1080-iw)/2:(1920-ih)/2:color=black[base_v]"
+        )
+    else:
+        filter_chains.append(f"[0:v]split=2[bg_src][fg_src]")
+        filter_chains.append(
+            f"[bg_src]scale=1080:1920:force_original_aspect_ratio=increase:force_divisible_by=2,"
+            f"crop=1080:1920,boxblur=30:5[bg_blurred]"
+        )
+        fg_w = 1080
+        fg_h = make_even(1080 / meme_ar)
+        filter_chains.append(
+            f"[fg_src]scale={fg_w}:{fg_h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg_scaled]"
+        )
+        filter_chains.append(
+            f"[bg_blurred][fg_scaled]overlay=x=(W-w)/2:y=(H-h)/2[base_v]"
+        )
+
+    # 2. Overlay ranking list banner
+    filter_chains.append(f"[base_v][1:v]overlay=x=0:y=0[v_comp]")
+    # Force 60 FPS CFR
+    filter_chains.append(f"[v_comp]fps=60,format=yuv420p[v_out]")
+
+    # 3. Audio handling & normalization (48000 Hz, stereo AAC)
+    has_audio = _has_audio(meme_video_path) if not is_image else False
+    audio_map = []
+
+    if has_audio:
+        filter_chains.append(
+            f"[0:a]aformat=sample_rates=48000:channel_layouts=stereo[a_out]"
+        )
+        audio_map = ["-map", "[a_out]"]
+    else:
+        fallback_audio = _get_fallback_meme_audio()
+        if fallback_audio and fallback_audio.exists():
+            inputs.extend(["-stream_loop", "-1", "-i", str(fallback_audio)])
+            filter_chains.append(
+                f"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[a_out]"
+            )
+            audio_map = ["-map", "[a_out]"]
+        else:
+            filter_chains.append(
+                f"anullsrc=r=48000:cl=stereo[a_out]"
+            )
+            audio_map = ["-map", "[a_out]"]
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", ";".join(filter_chains),
+        "-map", "[v_out]",
+        *audio_map,
+        "-t", f"{duration:.2f}",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        str(output_path)
+    ]
+
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=120)
+    if r.returncode != 0 or not output_path.exists():
+        raise RuntimeError(f"FFmpeg failed to standardize compilation clip: {r.stderr}")
+
+    return output_path
+
+
+def render_ranking_compilation(
+    clips_data: list[dict],
+    output_path: Path | None = None,
+    header_text: str = ""
+) -> Path:
+    """
+    Renders 5 standardized ranking clips with progressive revealed titles (#5 down to #1)
+    and merges them via FFmpeg concat demuxer.
+    """
+    if output_path is None:
+        output_path = config.OUTPUT_DIR / "final_short.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from src.video.overlay import generate_ranking_compilation_overlay
+
+    total_ranks = len(clips_data)
+    # Build complete dictionary of all titles by rank
+    rank_titles = {}
+    for item in clips_data:
+        r = item.get("rank", 1)
+        rank_titles[r] = item.get("title", "")
+
+    intermediate_clips = []
+    temp_overlays = []
+
+    try:
+        # Standardize each clip individually
+        for idx, item in enumerate(clips_data):
+            rank_num = item.get("rank", idx + 1)
+            video_path = item["video_path"]
+            duration = item.get("duration", 8.0)
+
+            # Generate overlay for this specific active rank
+            overlay_file = config.OUTPUT_DIR / f"ranking_overlay_rank_{rank_num}.png"
+            generate_ranking_compilation_overlay(
+                active_rank=rank_num,
+                total_ranks=total_ranks,
+                rank_titles=rank_titles,
+                header_text=header_text,
+                filename=overlay_file.name
+            )
+            temp_overlays.append(overlay_file)
+
+            # Standardize intermediate clip
+            inter_clip_path = config.OUTPUT_DIR / f"temp_comp_clip_{idx}_{rank_num}.mp4"
+            logger.info(f"Standardizing clip #{rank_num} ({duration:.1f}s): {item.get('title')}")
+            render_compilation_clip(
+                meme_video_path=video_path,
+                overlay_path=overlay_file,
+                output_path=inter_clip_path,
+                duration=duration
+            )
+            intermediate_clips.append(inter_clip_path)
+
+        # Write FFmpeg concat list text file
+        concat_txt = config.OUTPUT_DIR / "concat_clips.txt"
+        with open(concat_txt, "w", encoding="utf-8") as f:
+            for p in intermediate_clips:
+                # Use forward slashes for cross-platform ffmpeg path compatibility
+                p_str = str(p.resolve()).replace("\\", "/")
+                f.write(f"file '{p_str}'\n")
+
+        # Concat demuxer (loss-less copy, executes in < 2 seconds)
+        logger.info(f"Stitching {len(intermediate_clips)} clips into final compilation short...")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_txt),
+            "-c", "copy",
+            str(output_path)
+        ]
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=60)
+        if r.returncode != 0 or not output_path.exists():
+            raise RuntimeError(f"FFmpeg concat demuxer failed: {r.stderr}")
+
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"✔ Ranking Compilation Short created: {output_path.name} ({size_mb:.2f}MB, 60fps)")
+
+    finally:
+        # Clean up temporary intermediate files to conserve storage
+        for p in intermediate_clips:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        for p in temp_overlays:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        concat_txt = config.OUTPUT_DIR / "concat_clips.txt"
+        try:
+            concat_txt.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return output_path
+
 
 
