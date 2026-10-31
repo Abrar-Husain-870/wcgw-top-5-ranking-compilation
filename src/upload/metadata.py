@@ -254,15 +254,63 @@ def generate_compilation_metadata(clips_data: list[dict]) -> dict:
     if not rank_1_title and clips_data:
         rank_1_title = clips_data[-1].get("title", "")
 
-    # Clicky compilation titles
-    title_options = [
-        f"Top 5 Fails That Hurt To Watch 💀 (#1 is Wild) #Shorts",
-        f"Ranking Top 5 Instant Regrets (#1 Was Cooking) 😭 #Shorts",
-        f"Top 5 What Could Go Wrong Moments Caught On Camera 🤯 #Shorts",
-        f"Top 5 Funniest Fails of the Week (#1 Winner) 🏆 #Shorts",
-        f"Ranking The Best Fails Ever (#1 is Crazy) 💀 #Shorts"
-    ]
-    title = random.choice(title_options)
+    title = ""
+    # Try dynamic AI-generated title via Groq
+    if getattr(config, "GROQ_API_KEY", None):
+        try:
+            from groq import Groq
+            client = Groq(api_key=config.GROQ_API_KEY)
+            clips_summary = ", ".join([f"#{c.get('rank', idx+1)} {c.get('title', '')}" for idx, c in enumerate(clips_data)])
+            completion = client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a YouTube Shorts viral marketing expert. Generate ONE unique, high-CTR, clicky compilation title "
+                            "under 75 characters for a fail countdown video. Include 1 emoji and '#Shorts'. "
+                            "Make it curious, funny, or shocking. Output ONLY the raw title text without quotes or explanation."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"The countdown clips from #5 to #1 grand finale are: {clips_summary}. Climax clip is: {rank_1_title}."
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=60,
+                timeout=5
+            )
+            raw_ai_title = completion.choices[0].message.content.strip().strip('"\'')
+            if raw_ai_title and 20 <= len(raw_ai_title) <= 90:
+                if "#Shorts" not in raw_ai_title and "#shorts" not in raw_ai_title:
+                    raw_ai_title += " #Shorts"
+                title = raw_ai_title
+                logger.info(f"AI generated compilation title: '{title}'")
+        except Exception as e:
+            logger.debug(f"AI compilation title generation fallback: {e}")
+
+    # Fallback to dynamic template selection featuring the actual #1 clip name
+    if not title:
+        r1_display = rank_1_title.strip() if rank_1_title else "The Finale"
+        title_options = [
+            f"Ranking Top 5 Fails (#1: {r1_display}) 😭 #Shorts",
+            f"Top 5 Instant Regrets (#1: {r1_display}) 💀 #Shorts",
+            f"Wait For #1... Top 5 Fails Ranked 😭 #Shorts",
+            f"Top 5 What Could Go Wrong Moments (#1 Was Wild) 🤯 #Shorts",
+            f"Ranking 5 Fails That Hurt To Watch (#1: {r1_display}) 💀 #Shorts",
+            f"Top 5 Funniest Fails of the Week (#1 Winner) 🏆 #Shorts",
+            f"Ranking Top 5 Instant Regrets (#1 Was Cooking) 😭 #Shorts",
+            f"Top 5 Dumbest Decisions Ranked (#1 is Crazy) 💀 #Shorts",
+            f"Ranking The Best Fails Ever (#1: {r1_display}) 😱 #Shorts",
+            f"5 People Having A Worse Day Than You (#1 is Wild) 😭 #Shorts",
+            f"Top 5 Instant Karma & Fail Moments (#{r1_display}) 💀 #Shorts",
+            f"Ranking Top 5 Fails (#1 Did Not Expect That) 😂 #Shorts",
+            f"Top 5 Fails Caught On Camera (#1: {r1_display}) 💀 #Shorts",
+            f"Ranking Fails That Defy All Logic (#1 Winner) 😭 #Shorts",
+            f"Top 5 Times Things Went Completely Wrong (#1) 🤯 #Shorts",
+        ]
+        title = random.choice(title_options)
 
     # Build description with timestamps
     description_lines = [
