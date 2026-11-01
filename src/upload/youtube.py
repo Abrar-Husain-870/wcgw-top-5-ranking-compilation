@@ -94,26 +94,32 @@ def _get_authenticated_service():
             logger.warning(f"Could not load cached token: {e}")
             creds = None
 
-    # Fallback to refresh token in env
-    if (not creds or not creds.valid) and config.YT_REFRESH_TOKEN:
-        logger.info("Authenticating using YT_REFRESH_TOKEN env variable...")
-        creds = Credentials(
-            token=None,
-            refresh_token=config.YT_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=config.YT_CLIENT_ID,
-            client_secret=config.YT_CLIENT_SECRET,
-            scopes=SCOPES,
-        )
+    # Fallback to refresh tokens in env if cached token not valid
+    if not creds or not creds.valid:
+        candidate_tokens = []
+        for t in [config.YT_REFRESH_TOKEN, getattr(config, "YT_MEME_REFRESH_TOKEN", "")]:
+            if t and t not in candidate_tokens:
+                candidate_tokens.append(t)
 
-    # Refresh expired credentials
-    if creds and not creds.valid:
-        try:
-            creds.refresh(Request())
-            logger.info("YouTube OAuth credentials refreshed successfully.")
-        except Exception as e:
-            logger.error(f"YouTube credentials refresh failed: {e}")
-            creds = None
+        for tok in candidate_tokens:
+            tok_preview = tok[:10] + "..." if len(tok) > 10 else "token"
+            logger.info(f"Attempting YouTube authentication with token ({tok_preview})...")
+            candidate_creds = Credentials(
+                token=None,
+                refresh_token=tok,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=config.YT_CLIENT_ID,
+                client_secret=config.YT_CLIENT_SECRET,
+                scopes=SCOPES,
+            )
+            try:
+                candidate_creds.refresh(Request())
+                if candidate_creds.valid:
+                    logger.info("YouTube OAuth credentials refreshed successfully.")
+                    creds = candidate_creds
+                    break
+            except Exception as e:
+                logger.warning(f"YouTube credentials refresh failed for token ({tok_preview}): {e}")
 
     if not creds or not creds.valid:
         logger.error("Could not authenticate with YouTube. Check YT_REFRESH_TOKEN configuration.")
