@@ -52,7 +52,7 @@ SUBREDDITS = [
     s.strip()
     for s in _env(
         "SUBREDDITS",
-        "Whatcouldgowrong, Unexpected, AccidentalSlapStick",
+        "Whatcouldgowrong, Unexpected, AccidentalSlapStick, LooneyTunesLogic, funnyanimals, startledcats, AnimalsBeingDerps, holdmybeer, instantkarma",
     ).split(",")
     if s.strip()
 ]
@@ -67,6 +67,16 @@ _preferred_weights = {
     "Whatcouldgowrong": 5.0,
     "Unexpected": 5.0,
     "AccidentalSlapStick": 5.0,
+    "LooneyTunesLogic": 5.0,
+    "funnyanimals": 5.0,
+    "startledcats": 4.5,
+    "AnimalsBeingDerps": 4.5,
+    "AnimalsBeingJerks": 4.5,
+    "holdmybeer": 4.0,
+    "instantkarma": 4.0,
+    "instant_regret": 4.0,
+    "IdiotsFightingThings": 4.0,
+    "FullScorpion": 4.0,
     "memes": 3.0,
     "dankmemes": 3.0,
 }
@@ -261,5 +271,6 @@ COMPILATION_MODE = _env_bool("COMPILATION_MODE", True)
 COMPILATION_CLIP_COUNT = int(_env("COMPILATION_CLIP_COUNT", "5"))
 COMPILATION_MIN_CLIP_DURATION = float(_env("COMPILATION_MIN_CLIP_DURATION", "3.5"))
 COMPILATION_MAX_CLIP_DURATION = float(_env("COMPILATION_MAX_CLIP_DURATION", "11.0"))
+COMPILATION_MAX_CANDIDATE_RAW_DURATION = float(_env("COMPILATION_MAX_CANDIDATE_RAW_DURATION", "28.0"))
 COMPILATION_MAX_TOTAL_DURATION = float(_env("COMPILATION_MAX_TOTAL_DURATION", "58.0"))
 RANKING_HEADER_TEXT = _env("RANKING_HEADER_TEXT", "Ranking Best Fails")

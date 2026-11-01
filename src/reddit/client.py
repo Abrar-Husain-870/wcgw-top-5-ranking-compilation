@@ -1203,7 +1203,7 @@ def get_compilation_candidate_pool(
 
     from src.reddit.providers import RedditPrawProvider, RedditRSSProvider, RedditAnonymousProvider
     from src.safety import ContentSafetyAnalyzer, log_rejected_post
-    from src.video.renderer import _get_audio_duration, _has_audio
+    from src.video.renderer import _get_audio_duration, _has_audio, _get_fallback_meme_audio
     from src.narration.title_summarizer import summarize_ranking_title
 
     safety_analyzer = ContentSafetyAnalyzer()
@@ -1241,6 +1241,7 @@ def get_compilation_candidate_pool(
     min_dur = getattr(config, "COMPILATION_MIN_CLIP_DURATION", 3.5)
     max_dur = getattr(config, "COMPILATION_MAX_CLIP_DURATION", 11.0)
     max_total_dur = getattr(config, "COMPILATION_MAX_TOTAL_DURATION", 58.0)
+    max_raw_dur = getattr(config, "COMPILATION_MAX_CANDIDATE_RAW_DURATION", 28.0)
 
     approved_clips: List[dict] = []
     accumulated_dur = 0.0
@@ -1260,28 +1261,56 @@ def get_compilation_candidate_pool(
                 return None
 
             try:
-                clip_dur = _get_audio_duration(clip_path)
-            except Exception:
+                raw_dur = _get_audio_duration(clip_path)
+            except Exception as ex:
+                logger.info(f"Candidate {post.id} discarded: could not read video duration ({ex}).")
                 clip_path.unlink(missing_ok=True)
                 return None
 
-            # Strict duration bounds check
-            if clip_dur < min_dur or clip_dur > max_dur:
-                logger.debug(f"Candidate {post.id} discarded: duration {clip_dur:.1f}s outside bounds ({min_dur}s - {max_dur}s).")
+            # Discard clips that are too short or unreasonably long
+            if raw_dur < min_dur:
+                logger.info(f"Candidate {post.id} discarded: duration {raw_dur:.1f}s is too short (< {min_dur}s).")
                 clip_path.unlink(missing_ok=True)
                 return None
 
-            # Check if this clip exceeds the remaining total duration budget
-            if (accumulated_dur + clip_dur) > max_total_dur:
-                logger.debug(f"Candidate {post.id} skipped: total duration ({accumulated_dur + clip_dur:.1f}s) would exceed {max_total_dur:.1f}s.")
+            if raw_dur > max_raw_dur:
+                logger.info(f"Candidate {post.id} discarded: duration {raw_dur:.1f}s exceeds candidate raw limit ({max_raw_dur}s).")
                 clip_path.unlink(missing_ok=True)
                 return None
 
-            # Check audio presence
-            if not _has_audio(clip_path):
-                logger.debug(f"Candidate {post.id} discarded: video has no audio track.")
-                clip_path.unlink(missing_ok=True)
-                return None
+            # Check audio presence; if silent, assign fallback audio ('Ocean meme audio.mpeg')
+            has_audio = _has_audio(clip_path)
+            if not has_audio:
+                fallback_audio = _get_fallback_meme_audio()
+                if fallback_audio and fallback_audio.exists():
+                    logger.info(f"✔ Candidate {post.id} has no audio: will assign fallback audio '{fallback_audio.name}'.")
+                else:
+                    logger.info(f"Candidate {post.id} discarded: video has no audio track and fallback audio not found.")
+                    clip_path.unlink(missing_ok=True)
+                    return None
+
+            # Smart Climax Trimming:
+            # If the video is longer than max_dur (e.g. 15s), the punchline/fail is at the END.
+            # We take the final max_dur seconds, cutting off the boring initial setup!
+            if raw_dur > max_dur:
+                target_dur = max_dur
+                start_time = max(0.0, raw_dur - max_dur)
+                logger.info(f"Candidate {post.id} raw duration {raw_dur:.1f}s > {max_dur:.1f}s: trimming to climax (last {target_dur:.1f}s, start: {start_time:.1f}s).")
+            else:
+                target_dur = raw_dur
+                start_time = 0.0
+
+            # Adapt to remaining compilation budget
+            remaining_budget = max_total_dur - accumulated_dur
+            if target_dur > remaining_budget:
+                if remaining_budget >= min_dur:
+                    target_dur = remaining_budget
+                    start_time = max(0.0, raw_dur - target_dur)
+                    logger.info(f"Candidate {post.id} adapted to fit remaining compilation budget ({target_dur:.1f}s, start: {start_time:.1f}s).")
+                else:
+                    logger.info(f"Candidate {post.id} skipped: remaining budget ({remaining_budget:.1f}s) is below min clip duration ({min_dur}s).")
+                    clip_path.unlink(missing_ok=True)
+                    return None
 
             # Content Safety Stage 1 Check
             if getattr(config, "ENABLE_CONTENT_SAFETY", True):
@@ -1305,12 +1334,14 @@ def get_compilation_candidate_pool(
 
             # Summarize 3-word title + emoji
             rank_title = summarize_ranking_title(post.title)
-            accumulated_dur += clip_dur
+            accumulated_dur += target_dur
 
             return {
                 "post": post,
                 "video_path": clip_path,
-                "duration": clip_dur,
+                "duration": target_dur,
+                "start_time": start_time,
+                "has_audio": has_audio,
                 "title": rank_title,
                 "score": post.score
             }
@@ -1336,7 +1367,7 @@ def get_compilation_candidate_pool(
     # Supplementary fetch across related subreddits if initial pool yielded fewer than target_count
     if len(approved_clips) < target_count:
         logger.info(f"Harvested {len(approved_clips)}/{target_count} clips from initial batch. Querying supplementary subreddits...")
-        supp_subs = [s for s in ["IdiotsInCars", "holdmyfeedingtube", "instant_regret", "nonononoyes", "maybemaybemaybe"] if s not in subreddits]
+        supp_subs = [s for s in ["LooneyTunesLogic", "funnyanimals", "startledcats", "AnimalsBeingDerps", "AnimalsBeingJerks", "holdmybeer", "instantkarma", "instant_regret", "IdiotsFightingThings", "FullScorpion"] if s not in subreddits]
         for extra_sub in supp_subs:
             if len(approved_clips) >= target_count or (accumulated_dur + min_dur > max_total_dur):
                 break

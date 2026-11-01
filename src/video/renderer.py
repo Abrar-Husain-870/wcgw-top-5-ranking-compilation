@@ -905,7 +905,8 @@ def render_curator_short(
         if fallback_audio_path and fallback_audio_path.exists():
             fallback_input_idx = current_idx
             # Loop infinitely using -stream_loop -1 so if video is longer than audio, it repeats seamlessly
-            inputs.extend(["-stream_loop", "-1", "-i", str(fallback_audio_path)])
+            # -vn avoids loading attached album artwork as an unmapped video stream
+            inputs.extend(["-stream_loop", "-1", "-vn", "-i", str(fallback_audio_path)])
             current_idx += 1
             logger.info(
                 f"Meme video has no audio. Using looping fallback audio '{fallback_audio_path.name}' "
@@ -1018,7 +1019,8 @@ def render_compilation_clip(
     meme_video_path: Path,
     overlay_path: Path,
     output_path: Path,
-    duration: float
+    duration: float,
+    start_time: float = 0.0
 ) -> Path:
     """
     Renders a single standardized 1080x1920 60FPS clip for the ranking compilation.
@@ -1027,6 +1029,7 @@ def render_compilation_clip(
     - Landscape/Square (>=0.6 aspect ratio): crisp foreground centered at 1080 width,
       blurred background canvas filling 1080x1920.
     - Overlays the ranking banner transparent PNG across the frame.
+    - Supports start_time seeking (-ss) to trim longer fail clips directly to the punchline.
     - Forces 60 FPS CFR H.264 video and 48,000 Hz stereo AAC audio.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1041,6 +1044,8 @@ def render_compilation_clip(
     if is_image:
         inputs.extend(["-loop", "1", "-i", str(meme_video_path)])
     else:
+        if start_time > 0.05:
+            inputs.extend(["-ss", f"{start_time:.2f}"])
         inputs.extend(["-i", str(meme_video_path)])
 
     # Overlay is input #1
@@ -1086,7 +1091,8 @@ def render_compilation_clip(
     else:
         fallback_audio = _get_fallback_meme_audio()
         if fallback_audio and fallback_audio.exists():
-            inputs.extend(["-stream_loop", "-1", "-i", str(fallback_audio)])
+            # -vn prevents loading attached album cover artwork as an unmapped video stream
+            inputs.extend(["-stream_loop", "-1", "-vn", "-i", str(fallback_audio)])
             filter_chains.append(
                 f"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[a_out]"
             )
@@ -1150,6 +1156,7 @@ def render_ranking_compilation(
             rank_num = item.get("rank", idx + 1)
             video_path = item["video_path"]
             duration = item.get("duration", 8.0)
+            start_time = item.get("start_time", 0.0)
 
             # Generate overlay for this specific active rank
             overlay_file = config.OUTPUT_DIR / f"ranking_overlay_rank_{rank_num}.png"
@@ -1164,12 +1171,13 @@ def render_ranking_compilation(
 
             # Standardize intermediate clip
             inter_clip_path = config.OUTPUT_DIR / f"temp_comp_clip_{idx}_{rank_num}.mp4"
-            logger.info(f"Standardizing clip #{rank_num} ({duration:.1f}s): {item.get('title')}")
+            logger.info(f"Standardizing clip #{rank_num} ({duration:.1f}s, start: {start_time:.1f}s): {item.get('title')}")
             render_compilation_clip(
                 meme_video_path=video_path,
                 overlay_path=overlay_file,
                 output_path=inter_clip_path,
-                duration=duration
+                duration=duration,
+                start_time=start_time
             )
             intermediate_clips.append(inter_clip_path)
 
