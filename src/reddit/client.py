@@ -1166,6 +1166,14 @@ def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[R
             elif post.subreddit in recent_subreddits:
                 base_w *= 0.6  # Light penalty
                 
+        # Animal videos get least priority unless they are exceptionally viral / funniest of all
+        animal_subs = getattr(config, "ANIMAL_SUBREDDITS", set())
+        if post.subreddit.lower() in animal_subs:
+            if post.score >= 10000:
+                base_w *= min(2.5, post.score / 5000.0)
+            else:
+                base_w *= 0.15  # Lowest priority for average animal clips
+
         weights.append(max(0.01, base_w))
 
     # Perform weighted random choice
@@ -1235,8 +1243,32 @@ def get_compilation_candidate_pool(
         logger.error("❌ No candidate posts found in RAM for compilation.")
         return []
 
-    # Shuffle candidates to maintain diversity across runs
-    random.shuffle(valid_candidates_in_ram)
+    animal_subs = getattr(config, "ANIMAL_SUBREDDITS", set())
+
+    # Prioritize candidates: Human fails & cartoon logic first, animal videos given lowest priority
+    # UNLESS an animal video is exceptionally viral / the funniest of all (very high score)
+    def _candidate_priority(post: RedditPost) -> float:
+        is_animal = post.subreddit.lower() in animal_subs
+        sub_weight = config.SUBREDDIT_WEIGHTS.get(post.subreddit, 1.0)
+        
+        # Base priority from configured subreddit weight
+        priority = sub_weight * 1000.0
+        
+        if is_animal:
+            # Animal videos get least priority by default
+            priority *= 0.1
+            # UNLESS they are the funniest of all (super high score)
+            if post.score >= 5000:
+                priority += post.score * 0.8
+        else:
+            # Human fails & slapstick get priority boosted by engagement score
+            priority += post.score * 0.2
+            
+        # Add small random jitter (0-50) to keep selections varied across runs among equal posts
+        priority += random.uniform(0, 50)
+        return priority
+
+    valid_candidates_in_ram.sort(key=_candidate_priority, reverse=True)
 
     min_dur = getattr(config, "COMPILATION_MIN_CLIP_DURATION", 3.5)
     max_dur = getattr(config, "COMPILATION_MAX_CLIP_DURATION", 11.0)
@@ -1250,6 +1282,14 @@ def get_compilation_candidate_pool(
         nonlocal accumulated_dur
         if accumulated_dur + min_dur > max_total_dur:
             return None
+
+        # Animal videos quota: max 1 animal clip per compilation short unless ultra-viral
+        is_animal = post.subreddit.lower() in animal_subs
+        if is_animal:
+            animal_count = sum(1 for c in approved_clips if c["post"].subreddit.lower() in animal_subs)
+            if animal_count >= 1 and post.score < 15000:
+                logger.info(f"Candidate {post.id} (r/{post.subreddit}) skipped: animal quota reached (max 1 animal clip unless ultra-viral).")
+                return None
 
         logger.info(f"Downloading candidate clip for post {post.id} ('{post.title[:35]}...')...")
         clip_path = None

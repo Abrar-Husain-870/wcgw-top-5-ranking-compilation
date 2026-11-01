@@ -62,27 +62,34 @@ SUBREDDIT_WEIGHTS = {}
 for s in SUBREDDITS:
     SUBREDDIT_WEIGHTS[s] = 1.0
 
-# High priority subreddits get configured weights
+# High priority subreddits get configured weights (fails and slapstick prioritized)
 _preferred_weights = {
     "Whatcouldgowrong": 5.0,
     "Unexpected": 5.0,
     "AccidentalSlapStick": 5.0,
     "LooneyTunesLogic": 5.0,
-    "funnyanimals": 5.0,
-    "startledcats": 4.5,
-    "AnimalsBeingDerps": 4.5,
-    "AnimalsBeingJerks": 4.5,
-    "holdmybeer": 4.0,
-    "instantkarma": 4.0,
-    "instant_regret": 4.0,
+    "holdmybeer": 4.5,
+    "instantkarma": 4.5,
+    "instant_regret": 4.5,
     "IdiotsFightingThings": 4.0,
     "FullScorpion": 4.0,
-    "memes": 3.0,
-    "dankmemes": 3.0,
+    "funnyanimals": 1.0,
+    "startledcats": 1.0,
+    "AnimalsBeingDerps": 1.0,
+    "AnimalsBeingJerks": 1.0,
+    "holdmycatnip": 1.0,
+    "memes": 2.0,
+    "dankmemes": 2.0,
 }
 for s, w in _preferred_weights.items():
     if s in SUBREDDIT_WEIGHTS:
         SUBREDDIT_WEIGHTS[s] = float(_env(f"SUBREDDIT_WEIGHT_{s.upper()}", str(w)))
+
+# Subreddits identified as animal-focused (given lowest priority unless exceptionally viral)
+ANIMAL_SUBREDDITS = {
+    "funnyanimals", "startledcats", "animalsbeingderps",
+    "animalsbeingjerks", "holdmycatnip", "catslaps", "hitmanimals", "animalfails"
+}
 
 REDDIT_SORT = _env("REDDIT_SORT", "best")  # best, top, hot, rising, new
 REDDIT_TIME_FILTER = _env("REDDIT_TIME_FILTER", "week")  # day, week, month, year, all
