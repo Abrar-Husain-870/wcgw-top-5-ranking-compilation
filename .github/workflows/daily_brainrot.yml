@@ -35,6 +35,11 @@ on:
         description: "Override subreddit (leave blank to use .env list)"
         required: false
         default: ""
+      ignore_daily_limit:
+        description: "Bypass 24h daily upload limit (force upload)"
+        required: false
+        default: true
+        type: boolean
 
 # Prevent two runs from overlapping and corrupting the database
 concurrency:
@@ -148,6 +153,13 @@ jobs:
           # Append optional subreddit override from manual dispatch
           if [ -n "$SUB" ]; then
             CMD="$CMD --subreddit $SUB"
+          fi
+
+          # If manually triggered via workflow_dispatch, default to bypassing 24h upload limit
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.ignore_daily_limit }}" != "false" ]; then
+              CMD="$CMD --ignore-limits"
+            fi
           fi
 
           echo "Running: $CMD"

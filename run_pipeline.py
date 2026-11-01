@@ -36,7 +36,7 @@ from src.video import (
     render_short,
     get_cat_reaction_clip,
 )
-from src.upload import upload_short, check_scheduler_run
+from src.upload import upload_short, check_scheduler_run, can_upload_now
 from src.safety import ContentSafetyAnalyzer, log_rejected_post
 
 # Global timeout for safety (40 minutes)
@@ -329,6 +329,8 @@ def main() -> None:
         )
         ap.add_argument("--no-upload", action="store_true", help="Skip YouTube upload phase")
         ap.add_argument("--force", action="store_true", help="Ignore scheduler slots, run immediately")
+        ap.add_argument("--ignore-limits", action="store_true", help="Bypass 24h daily upload quota limit")
+        ap.add_argument("--force-upload", action="store_true", help="Bypass both scheduler slots and daily upload quota")
         ap.add_argument("--compilation", action="store_true", help="Force Top 5 Ranking compilation mode")
         ap.add_argument("--single", action="store_true", help="Force single-clip curator mode")
         ap.add_argument("--style", default="random", 
@@ -345,6 +347,10 @@ def main() -> None:
                         help="Skip downloading new background clips from YouTube")
         args = ap.parse_args()
 
+        if args.force_upload:
+            args.force = True
+            args.ignore_limits = True
+
         print("=" * 70)
         print("=== MEME SHORTS AUTOMATION PIPELINE ===")
         print("=" * 70)
@@ -355,12 +361,16 @@ def main() -> None:
             should_run = True
             logger.info("Scheduler Check: Bypassed (--no-upload specified)")
         else:
-            should_run = check_scheduler_run(force=args.force)
+            should_run = check_scheduler_run(force=args.force, ignore_daily_limit=args.ignore_limits)
         log_stage_finish("Scheduler Check", {"should_run": should_run})
         
         if not should_run:
-            print("\n[INFO] Pipeline run skipped by Scheduler. (Not inside an active time slot).")
-            print("   Use '--force' to bypass this check.")
+            if not args.ignore_limits and not can_upload_now():
+                print(f"\n[INFO] Pipeline run skipped by Scheduler: Daily upload limit reached ({config.MAX_VIDEOS_PER_DAY}/day).")
+                print("   Use '--ignore-limits' or '--force-upload' to bypass this check.")
+            else:
+                print("\n[INFO] Pipeline run skipped by Scheduler. (Not inside an active time slot).")
+                print("   Use '--force' to bypass this check.")
             sys.exit(0)
 
         # Style & Voice Mapping
@@ -469,7 +479,8 @@ def main() -> None:
                     description=optimized_meta["description"],
                     tags=optimized_meta["tags"],
                     category_id=optimized_meta["category_id"],
-                    privacy=args.privacy
+                    privacy=args.privacy,
+                    ignore_daily_limit=args.ignore_limits
                 )
 
                 if video_id:
